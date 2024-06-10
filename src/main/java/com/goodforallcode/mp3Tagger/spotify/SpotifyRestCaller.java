@@ -3,6 +3,7 @@ package com.goodforallcode.mp3Tagger.spotify;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.goodforallcode.mp3Tagger.model.domain.Album;
 import com.goodforallcode.mp3Tagger.model.domain.spotify.*;
+import com.goodforallcode.mp3Tagger.util.ComparisonUtil;
 import com.goodforallcode.mp3Tagger.util.Mp3FileUtil;
 import com.goodforallcode.mp3Tagger.util.RESTUtil;
 import com.goodforallcode.mp3Tagger.util.StringUtil;
@@ -10,7 +11,6 @@ import com.mpatric.mp3agic.ID3v1;
 import com.mpatric.mp3agic.InvalidDataException;
 import com.mpatric.mp3agic.Mp3File;
 import com.mpatric.mp3agic.UnsupportedTagException;
-import org.apache.commons.text.similarity.LevenshteinDistance;
 import org.json.JSONObject;
 
 import javax.net.ssl.HttpsURLConnection;
@@ -27,14 +27,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import static com.goodforallcode.mp3Tagger.util.ComparisonUtil.tracksAreEqual;
+
 
 public class SpotifyRestCaller {
-    private static LevenshteinDistance distanceCalculator = LevenshteinDistance.getDefaultInstance();
+
     public static String clientId = "9b2d07022df44017b911b6176dc19766";
     public static String secret = "9154ba61d07940ee8f03c50f98ff88fb";
-    private static int ALBUM_NAME_DISTANCE_CUTOFF = 5;
-    private static int ARTIST_NAME_DISTANCE_CUTOFF = 5;
-    private static int TRACK_NAME_DISTANCE_CUTOFF = 7;
     private static int DURATION_CUTOFF = 20_000;
 
     public String getAccessToken() {
@@ -58,9 +57,10 @@ public class SpotifyRestCaller {
         return token;
     }
 
-    public void populateAlbumsWithAdditionalSpotifyInformation(List<Album> albumsToFetchTracksFor, String token) {
-
-        List<String> albumIds = albumsToFetchTracksFor.stream().filter(a -> a.getAlbumItem() != null).map(a -> a.getAlbumItem().getId()).collect(Collectors.toList());
+    public boolean populateAlbumsWithAdditionalSpotifyInformation(List<Album> albumsToFetchTracksFor, String token) {
+        boolean mappedAllTracks = true;
+        boolean mappedCurrentTrack;
+        List<String> albumIds = albumsToFetchTracksFor.stream().filter(a -> a.getAlbumItem() != null).map(a -> a.getAlbumItem().getId()).distinct().collect(Collectors.toList());
         if (!albumIds.isEmpty()) {
             String joinedIds = String.join(",", albumIds);
             try {
@@ -72,31 +72,40 @@ public class SpotifyRestCaller {
                     SpotifyAlbumListResults callResults = objectMapper.readValue(json, SpotifyAlbumListResults.class);
                     String modifiedTargetTrack, modifiedSpotifyTrack;
                     String comment;
-                    for (SpotifyAlbumItem resultItem : callResults.getAlbums()) {
+                    List<SpotifyAlbumItem> spotifyAlbums = callResults.getAlbums();
+                    for (SpotifyAlbumItem resultItem : spotifyAlbums) {
                         for (Album album : albumsToFetchTracksFor) {
                             if (album.getAlbumItem() != null && album.getAlbumItem().getId().equals(resultItem.getId())) {
                                 album.setAlbumItem(resultItem);
                                 Mp3File mp3;
                                 ID3v1 currentTag;
                                 for (File file : album.getFiles()) {
-                                    try {
-                                        mp3 = new Mp3File(file);
-                                        currentTag = Mp3FileUtil.getTag(mp3);
-                                        modifiedTargetTrack = StringUtil.cleanupTrack(currentTag.getTitle());
+                                    if (!Mp3FileUtil.fileHasSpotifyInformation(file)) {
 
-                                        for (SpotifyTrack track : resultItem.getTracksContainer().getTracks()) {
-                                            modifiedSpotifyTrack = StringUtil.cleanupTrack(track.getName());
-                                            if (modifiedSpotifyTrack.contains(modifiedTargetTrack) || modifiedTargetTrack.contains(modifiedSpotifyTrack)) {
-                                                Mp3FileUtil.addTrackInformation(currentTag, track, file, mp3);
-                                                break;
+
+                                        try {
+                                            mappedCurrentTrack = false;
+                                            mp3 = new Mp3File(file);
+                                            currentTag = Mp3FileUtil.getTag(mp3);
+                                            modifiedTargetTrack = StringUtil.cleanupTrack(currentTag.getTitle());
+
+                                            for (SpotifyTrack track : resultItem.getTracksContainer().getTracks()) {
+                                                modifiedSpotifyTrack = StringUtil.cleanupTrack(track.getName());
+                                                if (modifiedSpotifyTrack.contains(modifiedTargetTrack) || modifiedTargetTrack.contains(modifiedSpotifyTrack)) {
+                                                    Mp3FileUtil.addTrackInformation(currentTag, track, file, mp3);
+                                                    mappedCurrentTrack = true;
+                                                    break;
+                                                }
                                             }
+                                            if (!mappedCurrentTrack) {
+                                                mappedAllTracks = false;
+                                            }
+                                        } catch (UnsupportedTagException | InvalidDataException e) {
+                                            //skip
+                                            mappedAllTracks = false;
                                         }
-                                    } catch (UnsupportedTagException | InvalidDataException e) {
-                                        //skip
                                     }
-
                                 }
-                                break;//stop looking at albums to fetch tracks for as we have one that matches a spotify result
                             }
                         }
                     }
@@ -106,6 +115,7 @@ public class SpotifyRestCaller {
                 throw new RuntimeException(e);
             }
         }
+        return mappedAllTracks;
     }
 
     public String getPlaylistId(String userName, String playlistName, String token) {
@@ -116,12 +126,16 @@ public class SpotifyRestCaller {
 
             String json = RESTUtil.callUrl("GET", urlString, token);
             ObjectMapper objectMapper = new ObjectMapper();
-            SpotifyPlaylistResults callResults = objectMapper.readValue(json, SpotifyPlaylistResults.class);
-            for (SpotifyPlaylist playlist : callResults.getPlaylists()) {
-                if (playlist.getOwner().getId().equals(userName) && playlist.getName().equals(playlistName)) {
-                    result = playlist.getId();
-                    break;
+            if(json!=null) {
+                SpotifyPlaylistResults callResults = objectMapper.readValue(json, SpotifyPlaylistResults.class);
+                for (SpotifyPlaylist playlist : callResults.getPlaylists()) {
+                    if (playlist.getOwner().getId().equals(userName) && playlist.getName().equals(playlistName)) {
+                        result = playlist.getId();
+                        break;
+                    }
                 }
+            }else{
+                System.err.println("Did not get id back for playlist: "+playlistName+" for user: "+userName);
             }
         } catch (IOException e) {
             throw new RuntimeException(e);
@@ -129,46 +143,18 @@ public class SpotifyRestCaller {
         return result;
     }
 
-    public SpotifyAlbumItem getAlbum(String artist, String album, String token, boolean compilation) {
+    public SpotifyAlbumItem getAlbum(String artist, String album, String token, boolean compilation,boolean isVariousArtists) {
         SpotifyAlbumItem results = null;
-        album = album.toLowerCase();
+        album = StringUtil.removeTrailingText(album.toLowerCase());
         try {
-            String spefics = album + " " + artist;
-            if (compilation) {
-                spefics = album;
+            String searchTerms = album;
+            if (!isVariousArtists) {
+                searchTerms = album + " " + artist;
             }
-            String urlString = "https://api.spotify.com/v1/search?q=" + URLEncoder.encode(spefics, StandardCharsets.UTF_8.toString())
+            String urlString = "https://api.spotify.com/v1/search?q=" + URLEncoder.encode(searchTerms, StandardCharsets.UTF_8.toString())
                     + "&type=album";
+            results = getSpotifyAlbumItem(artist, album, token, compilation, isVariousArtists, urlString, results);
 
-            String json = RESTUtil.callUrl("GET", urlString, token);
-            if (json != null) {
-                ObjectMapper objectMapper = new ObjectMapper();
-                SpotifyAlbumResults callResults = objectMapper.readValue(json, SpotifyAlbumResults.class);
-
-                int closestMatch = Integer.MAX_VALUE, currentDistance;
-                String spotifyAlbumName;
-                for (SpotifyAlbumItem albumItem : callResults.getAlbumsContainer().getAlbums()) {
-                    spotifyAlbumName = albumItem.getName().toLowerCase();
-                    if (isCorrectAlbumType(albumItem.getName(), albumItem.getAlbumType(), compilation)) {
-                        if (compilation || albumHasCorrectArtist(artist, albumItem)) {
-                            if (spotifyAlbumName.equals(album)) {
-                                results = albumItem;
-                                break;
-                            } else {
-                                currentDistance = distanceCalculator.apply(album, spotifyAlbumName);
-                                if (currentDistance < closestMatch) {
-                                    closestMatch = currentDistance;
-                                    if (currentDistance < ALBUM_NAME_DISTANCE_CUTOFF) {
-                                        results = albumItem;
-                                    } else if (album.length() > 5 && spotifyAlbumName.length() > 5 && (album.contains(spotifyAlbumName) || spotifyAlbumName.contains(album))) {
-                                        results = albumItem;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -177,16 +163,43 @@ public class SpotifyRestCaller {
         return results;
     }
 
-    public boolean populateAlbumWithTrackSearch(Album album, String token) {
+    private static SpotifyAlbumItem getSpotifyAlbumItem(String artist, String album, String token, boolean compilation,boolean isVariousArtists, String urlString, SpotifyAlbumItem results) throws IOException {
+        String json = RESTUtil.callUrl("GET", urlString, token);
+        if (json != null) {
+            ObjectMapper objectMapper = new ObjectMapper();
+            SpotifyAlbumResults callResults = objectMapper.readValue(json, SpotifyAlbumResults.class);
+
+            long closestMatch = Integer.MAX_VALUE, currentDistance;
+            String spotifyAlbumName;
+            for (SpotifyAlbumItem albumItem : callResults.getAlbumsContainer().getAlbums()) {
+                spotifyAlbumName = StringUtil.removeTrailingText(albumItem.getName().toLowerCase());
+                if (isCorrectAlbumType(albumItem.getName(), albumItem.getAlbumType(), compilation) && (isVariousArtists || albumHasCorrectArtist(artist, albumItem))) {
+                    long comparisonResults=ComparisonUtil.albumsAreEqual(album, spotifyAlbumName);
+                    if (comparisonResults==0) {
+                        results = albumItem;
+                        break;
+                    } else if (comparisonResults>0) {
+                        if (comparisonResults < closestMatch) {
+                            closestMatch = comparisonResults;
+                            results = albumItem;
+                        }
+                    }
+                }
+            }
+        }
+        return results;
+    }
+
+    public boolean populateAlbumWithTrackSearch(Album album, String token, boolean isVariousArtists) {
         boolean results = true;
         boolean currentResults;
         Mp3File mp3;
         for (File file : album.getFiles()) {
-            if (!Mp3FileUtil.fileTagged(file)) {
+            if (!Mp3FileUtil.fileHasSpotifyInformation(file)) {
                 try {
                     mp3 = new Mp3File(file);
                     ID3v1 tag = Mp3FileUtil.getTag(mp3);
-                    if (tag.getArtist() == null || tag.getArtist().toLowerCase().equals("various artists")) {
+                    if (isVariousArtists || tag.getArtist() == null || tag.getArtist().toLowerCase().equals("various artists")) {
                         currentResults = populateFileWithTrackSearchVariousArtists(tag.getTitle(), token, file.toPath(), album, mp3, tag);
                     } else {
                         currentResults = populateFileWithTrackSearch(tag.getArtist(), tag.getTitle(), token, file.toPath(), album, mp3, tag);
@@ -227,9 +240,12 @@ public class SpotifyRestCaller {
                 SpotifyTrackSearchResults callResults = objectMapper.readValue(json, SpotifyTrackSearchResults.class);
                 for (SpotifyTrack track : callResults.getTracksContainer().getTracks()) {
                     String spotifyCleanTrack = cleanTrackName(track.getName().toLowerCase());
-                    currentDistance = distanceCalculator.apply(spotifyCleanTrack, cleanTrackName);
-
-                    if ((spotifyCleanTrack.contains(cleanTrackName) || cleanTrackName.contains(spotifyCleanTrack)) && currentDistance < TRACK_NAME_DISTANCE_CUTOFF) {
+                    long tracksAreEqual = tracksAreEqual(cleanTrackName, spotifyCleanTrack);
+                    if (tracksAreEqual==0) {
+                        bestTrack = track;
+                        results = true;
+                        break;
+                    } else if (tracksAreEqual>0){
                         currentDurationDifference = Math.abs(track.getDuration() - duration);
                         if (currentDurationDifference < DURATION_CUTOFF && currentDurationDifference < bestDurationDifference) {
                             bestDurationDifference = currentDurationDifference;
@@ -245,6 +261,7 @@ public class SpotifyRestCaller {
                     results = Mp3FileUtil.addTrackInformation(tag, bestTrack, file.toFile(), mp3);
                 } else {
                     System.err.println("Could not find track using VA track search: " + trackName);
+                    tag.setComment("spotifyExistenceCheckFailed:" + LocalDate.now().toString());
                     Mp3FileUtil.saveMp3(file, mp3);
                 }
             }
@@ -268,13 +285,13 @@ public class SpotifyRestCaller {
         }
 
         String cleanTrackName = StringUtil.cleanupTrack(trackName);
-        String originalTrackName = cleanTrackName(trackName);
+        String originalTrackName = StringUtil.removeTrailingText(trackName);
 
         long duration = mp3.getLengthInMilliseconds();
         String[] artists = artist.toLowerCase().replaceFirst("dj ", "").split("/");
-        String searchTerms = cleanTrackName + " " + artist;
+        String searchTerms = originalTrackName + " " + artist;
         if (artist.toLowerCase().contains("various")) {
-            searchTerms = cleanTrackName;
+            searchTerms = originalTrackName;
         }
         try {
             String urlString = "https://api.spotify.com/v1/search?q=" + URLEncoder.encode(searchTerms, StandardCharsets.UTF_8.toString())
@@ -283,8 +300,7 @@ public class SpotifyRestCaller {
             //do after the search as it removes spaces
 
             String json = RESTUtil.callUrl("GET", urlString, token);
-            long bestDurationDifference = Integer.MAX_VALUE, currentDurationDifference;
-            int currentDistance;
+            long bestDurationDifference = Integer.MAX_VALUE, currentDurationDifference, currentDistance;
             SpotifyTrack bestTrack = null;
             String modifiedTrackName, modifiedTrackArtist, modifiedTargetArtist;
             if (json != null) {
@@ -303,7 +319,7 @@ public class SpotifyRestCaller {
                         if (cleanTrackName.equals(modifiedTrackName)) {
                             for (String artistName : artists) {
                                 modifiedTargetArtist = StringUtil.cleanupArtist(artistName);
-                                if (modifiedTargetArtist.contains("various") || distanceCalculator.apply(modifiedTrackArtist, modifiedTargetArtist) < ARTIST_NAME_DISTANCE_CUTOFF) {
+                                if (ComparisonUtil.albumsAreEqual(modifiedTargetArtist, modifiedTrackArtist)>=0) {
                                     album.getTracks().add(track);
                                     results = Mp3FileUtil.addTrackInformation(tag, track, file.toFile(), mp3);
                                     break;
@@ -311,14 +327,13 @@ public class SpotifyRestCaller {
                             }
                             break;
                         } else {
-                            currentDistance = distanceCalculator.apply(modifiedTrackName, cleanTrackName);
                             currentDurationDifference = Math.abs(track.getDuration() - duration);
                             if (currentDurationDifference < bestDurationDifference) {
-                                if (currentDistance < TRACK_NAME_DISTANCE_CUTOFF && (cleanTrackName.contains(modifiedTrackName)
-                                        || modifiedTrackName.contains(cleanTrackName))) {
+                                if (tracksAreEqual(cleanTrackName, modifiedTrackName)>=0) {
                                     for (String artistName : artists) {
                                         modifiedTargetArtist = StringUtil.cleanupArtist(artistName);
-                                        if (modifiedTargetArtist.contains("various") || modifiedTrackArtist.contains(modifiedTargetArtist) || modifiedTargetArtist.contains(modifiedTrackArtist)) {
+                                         currentDistance=ComparisonUtil.artistsAreEqual(modifiedTargetArtist,modifiedTrackArtist);
+                                        if (currentDistance>=0) {
                                             bestDurationDifference = currentDistance;
                                             bestTrack = track;
                                         }
@@ -340,8 +355,8 @@ public class SpotifyRestCaller {
                                     artist = artist.substring(0, end).trim();
                                 }
                             }
-                            String originalTrackNameWithoutTrailing = StringUtil.removeTrailingText(originalTrackName);
-                            results = populateFileWithTrackSearch(artist, originalTrackNameWithoutTrailing, token, file, album, mp3, tag);
+                            String cleanTrackNameWithoutTrailing = StringUtil.removeTrailingText(cleanTrackName);
+                            results = populateFileWithTrackSearch(artist, cleanTrackNameWithoutTrailing, token, file, album, mp3, tag);
                         } else {
                             System.err.println("Could not find a track for " + cleanTrackName + " with track search");
                             tag.setComment("spotifyExistenceCheckFailed:" + LocalDate.now().toString());
@@ -388,12 +403,12 @@ public class SpotifyRestCaller {
         return success;
     }
 
-    public boolean addPlaylistInformationToTracks(String artist, String albumName, String token, boolean compilation, Album album) {
+    public boolean addPlaylistSearchInformationToTracks(String artist, String albumName, String token, boolean isVariousArtists, Album album) {
         boolean results = false;
         albumName = StringUtil.cleanupAlbum(albumName);
 
         boolean variousArtists = false;
-        if (artist == null || List.of("various", "various artists").contains(artist.toLowerCase())) {
+        if (artist == null || List.of("various", "various artists").contains(artist.toLowerCase()) || isVariousArtists) {
             variousArtists = true;
         } else {
             artist = StringUtil.cleanupArtist(artist);
@@ -402,7 +417,7 @@ public class SpotifyRestCaller {
         try {
             String urlString = "https://api.spotify.com/v1/search?q=" + URLEncoder.encode((albumName + " " + artist), StandardCharsets.UTF_8.toString())
                     + "&type=playlist";
-            if (compilation || variousArtists) {
+            if (variousArtists) {
                 urlString = "https://api.spotify.com/v1/search?q=" + URLEncoder.encode((albumName), StandardCharsets.UTF_8.toString())
                         + "&type=playlist";
             }
@@ -425,6 +440,9 @@ public class SpotifyRestCaller {
 
                         trackContainers = getPlaylistTracks(playlist.getTrackInformation().getHref(), token);
                         for (File file : album.getFiles()) {
+                            if(Mp3FileUtil.fileHasIdAlready(file)){
+                                continue;
+                            }
                             try {
                                 mp3 = new Mp3File(file);
                                 tag = Mp3FileUtil.getTag(mp3);
@@ -466,13 +484,15 @@ public class SpotifyRestCaller {
         String trackName;
         for (SpotifyTrackContainer container : trackContainers) {
             track = container.getTrack();
-            trackName = StringUtil.cleanupTrack(track.getName());
-            if (trackName.contains(trackTitle)) {
-                if (album != null) {
-                    album.getTracks().add(track);
-                    success = Mp3FileUtil.addTrackInformation(tag, track, file, mp3);
+            if (track != null) {
+                trackName = StringUtil.cleanupTrack(track.getName());
+                if (trackName.contains(trackTitle)) {
+                    if (album != null) {
+                        album.getTracks().add(track);
+                        success = Mp3FileUtil.addTrackInformation(tag, track, file, mp3);
+                    }
+                    break;
                 }
-                break;
             }
         }
         return success;
@@ -506,8 +526,8 @@ public class SpotifyRestCaller {
             String modifiedSpotifyArtist = StringUtil.cleanupArtist(artist);
             for (SpotifyArtist currentArtist : albumItem.getArtists()) {
                 modifiedTargetArtist = StringUtil.cleanupArtist(currentArtist.getName());
-                currentDistance = distanceCalculator.apply(modifiedTargetArtist, modifiedSpotifyArtist);
-                if (currentDistance < ARTIST_NAME_DISTANCE_CUTOFF) {
+
+                if (ComparisonUtil.artistsAreEqual(modifiedSpotifyArtist, modifiedTargetArtist)==0) {
                     albumHasCorrectArtist = true;
                     break;
                 }
@@ -516,7 +536,7 @@ public class SpotifyRestCaller {
         return albumHasCorrectArtist;
     }
 
-    private boolean isCorrectAlbumType(String albumName, String albumType, boolean isCompilation) {
+    private static boolean isCorrectAlbumType(String albumName, String albumType, boolean isCompilation) {
         boolean isCorrectAlbumType = false;
         if (isCompilation) {
             if (albumType.equals("compilation")) {

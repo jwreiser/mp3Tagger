@@ -1,18 +1,21 @@
 package com.goodforallcode.mp3Tagger.config;
 
-import com.goodforallcode.mp3Tagger.batch.DirectoryProcessor;
+import com.goodforallcode.mp3Tagger.batch.TaggingProcessor;
 import com.goodforallcode.mp3Tagger.batch.JobCompletionNotificationListener;
+import com.goodforallcode.mp3Tagger.batch.Mp3InfoToDatabaseProcessor;
+import com.goodforallcode.mp3Tagger.batch.Mp3InfoPublishingProcessor;
+import com.goodforallcode.mp3Tagger.model.domain.Mp3Info;
 import com.goodforallcode.mp3Tagger.model.input.DirectoryInput;
 import com.goodforallcode.mp3Tagger.spotify.TokenGenerator;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.batch.core.*;
 import org.springframework.batch.core.job.builder.JobBuilder;
-import org.springframework.batch.core.launch.support.RunIdIncrementer;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
-import org.springframework.batch.item.database.BeanPropertyItemSqlParameterSourceProvider;
-import org.springframework.batch.item.database.JdbcBatchItemWriter;
-import org.springframework.batch.item.database.builder.JdbcBatchItemWriterBuilder;
+import org.springframework.batch.item.Chunk;
+import org.springframework.batch.item.ItemWriter;
+import org.springframework.batch.item.data.MongoItemWriter;
+import org.springframework.batch.item.data.builder.MongoItemWriterBuilder;
 import org.springframework.batch.item.file.FlatFileItemReader;
 import org.springframework.batch.item.file.builder.FlatFileItemReaderBuilder;
 import org.springframework.batch.item.file.mapping.BeanWrapperFieldSetMapper;
@@ -21,21 +24,14 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 import org.springframework.core.io.FileSystemResource;
-import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseBuilder;
-import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseType;
-import org.springframework.orm.jpa.JpaTransactionManager;
-import org.springframework.orm.jpa.JpaVendorAdapter;
-import org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean;
-import org.springframework.orm.jpa.vendor.HibernateJpaVendorAdapter;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 
-import javax.sql.DataSource;
-import java.io.File;
+import org.springframework.data.mongodb.core.MongoTemplate;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Properties;
+import java.util.List;
 
 import static com.goodforallcode.mp3Tagger.config.Constants.JOB_NAME;
 
@@ -53,52 +49,6 @@ public class BatchConfiguration {
         this.env = env;
     }
 
-    @Bean(name = "dataSource")
-    public DataSource dataSource() {
-        EmbeddedDatabaseBuilder builder = new EmbeddedDatabaseBuilder();
-        return builder.setType(EmbeddedDatabaseType.H2)
-                .addScript("classpath:schema-all.sql")
-                .build();
-    }
-
-    @Bean(name = "batchJpaVendorAdapter")
-    public JpaVendorAdapter batchJpaVendorAdapter() {
-        return new HibernateJpaVendorAdapter();
-    }
-
-    @Bean(name = "entityManagerFactory")
-    public LocalContainerEntityManagerFactoryBean batchEntityManagerFactory() {
-        LocalContainerEntityManagerFactoryBean emfBean =
-                new LocalContainerEntityManagerFactoryBean();
-        emfBean.setDataSource(dataSource());
-        emfBean.setPackagesToScan("com.goodforallcode.playlistgenerator");
-        emfBean.setBeanName("entityManagerFactory");
-        emfBean.setJpaVendorAdapter(batchJpaVendorAdapter());
-
-        Properties jpaProps = new Properties();
-        jpaProps.put("hibernate.hbm2ddl.auto", env.getProperty(
-                "spring.jpa.hibernate.ddl-auto", "none"));
-        jpaProps.put("hibernate.jdbc.fetch_size", env.getProperty(
-                "spring.jpa.properties.hibernate.jdbc.fetch_size",
-                "200"));
-
-        Integer batchSize = env.getProperty(
-                "spring.jpa.properties.hibernate.jdbc.batch_size",
-                Integer.class, 100);
-        if (batchSize > 0) {
-            jpaProps.put("hibernate.jdbc.batch_size", batchSize);
-            jpaProps.put("hibernate.order_inserts", "true");
-            jpaProps.put("hibernate.order_updates", "true");
-        }
-
-        jpaProps.put("hibernate.show_sql", env.getProperty(
-                "spring.jpa.properties.hibernate.show_sql", "true"));
-        jpaProps.put("hibernate.format_sql", env.getProperty(
-                "spring.jpa.properties.hibernate.format_sql", "true"));
-
-        emfBean.setJpaProperties(jpaProps);
-        return emfBean;
-    }
 
     @Bean
     /**
@@ -106,14 +56,18 @@ public class BatchConfiguration {
      * @param listener
      * @param step1
      */
-    public Job job(JobRepository jobRepository, JobCompletionNotificationListener listener, Step step1) {
+    public Job taggingJob(JobRepository jobRepository, JobCompletionNotificationListener listener, Step step1, Step step2, Step step3) {
+
+
         return new JobBuilder(JOB_NAME, jobRepository)
-                .incrementer(new RunIdIncrementer())
+//                .incrementer(new RunIdIncrementer())
                 .listener(listener)
                 .validator(validator())
-                .flow(step1)
-//                .start(step1)
-                .end()
+//                .flow(step1)
+                .start(step1)
+                .next(step2)
+                .next(step3)
+//                .end() only for flow not for start
                 .build();
     }
 
@@ -141,23 +95,78 @@ public class BatchConfiguration {
         };
     }
     @Bean
-    public JdbcBatchItemWriter<DirectoryInput> writer(DataSource dataSource) {
-        return new JdbcBatchItemWriterBuilder<DirectoryInput>().itemSqlParameterSourceProvider(new BeanPropertyItemSqlParameterSourceProvider<>())
-                .sql("INSERT INTO DirectoryInput (directory) VALUES (:directory)")
-                .dataSource(dataSource)
+    public MongoItemWriter<Mp3Info> mp3Writer(MongoTemplate mongoTemplate) {
+        return new MongoItemWriterBuilder<Mp3Info>().template(mongoTemplate).collection("Songs")
+                .build();
+    }
+    @Bean
+    public MongoItemWriter<DirectoryInput> directoryWriter(MongoTemplate mongoTemplate) {
+        return new MongoItemWriterBuilder<DirectoryInput>().template(mongoTemplate).collection("Directories")
+                .build();
+    }
+    @Bean
+    public ItemWriter<List<Mp3Info>> collectionWriter(MongoTemplate mongoTemplate,MongoItemWriter<Mp3Info> mp3Writer) {
+
+        return new ItemWriter<List<Mp3Info>>() {
+
+            @Override
+            public void write(Chunk<? extends List<Mp3Info>> chunk) throws Exception {
+
+                Chunk<Mp3Info> totalChunk=new Chunk<>();
+                for(List<Mp3Info> list : chunk) {
+                    for(Mp3Info item : list) {
+                        totalChunk.add(item);
+                    }
+                }
+                if(totalChunk.getItems().size()>0) {
+                    mp3Writer.write(totalChunk);
+                }
+            }
+
+        };
+
+    }
+
+    @Bean
+    public Step step1(JobRepository jobRepository, PlatformTransactionManager transactionManager,MongoItemWriter<DirectoryInput> directoryWriter, FlatFileItemReader reader) throws Exception {
+        TokenGenerator tokenGenerator = new TokenGenerator("savecuomo", true);
+
+        return new StepBuilder("tagMp3s", jobRepository)
+                .<DirectoryInput, Void>chunk(2, transactionManager)
+                .reader(reader)
+                .processor(processor(tokenGenerator.getToken()))
+                .writer(directoryWriter)
+                .faultTolerant()
+                .skipLimit(100)//defaults to 0
+                .skip(Exception.class)
+                .build();
+    }
+    @Bean
+    public Step step2(JobRepository jobRepository, PlatformTransactionManager transactionManager,ItemWriter<List<Mp3Info>> mp3Writer, FlatFileItemReader reader) throws Exception {
+
+        return new StepBuilder("summarizeAndWrite", jobRepository)
+                .<DirectoryInput, List<Mp3Info>>chunk(2, transactionManager)
+                .reader(reader)
+                .processor(new Mp3InfoToDatabaseProcessor())
+                .writer(mp3Writer)
+                .faultTolerant()
+                .skipLimit(20)
+                .skip(Exception.class)
                 .build();
     }
 
     @Bean
-    public Step step1(JobRepository jobRepository, PlatformTransactionManager transactionManager, JdbcBatchItemWriter<DirectoryInput> writer, FlatFileItemReader reader) throws Exception {
+    public Step step3(JobRepository jobRepository, PlatformTransactionManager transactionManager,ItemWriter<List<Mp3Info>> mp3Writer, FlatFileItemReader reader) throws Exception {
         TokenGenerator tokenGenerator = new TokenGenerator("savecuomo", true);
         String token = tokenGenerator.getToken();
-
-        return new StepBuilder("addMp3Tags", jobRepository)
-                .<DirectoryInput, Void>chunk(2, transactionManager)
+        return new StepBuilder("publishPlaylist", jobRepository)
+                .<DirectoryInput, List<Mp3Info>>chunk(2, transactionManager)
                 .reader(reader)
-                .processor(processor(token))
-                .writer(writer)
+                .processor(new Mp3InfoPublishingProcessor(token, tokenGenerator.getPlaylistId(), tokenGenerator.getSpotifyApi()))
+                .writer(mp3Writer)
+                .faultTolerant()
+                .skipLimit(40)
+                .skip(Exception.class)
                 .build();
     }
 
@@ -174,8 +183,8 @@ public class BatchConfiguration {
     }
 
 
-    public DirectoryProcessor processor(String token) {
-        return new DirectoryProcessor(token);
+    public TaggingProcessor processor(String token) {
+        return new TaggingProcessor(token);
     }
 
 }

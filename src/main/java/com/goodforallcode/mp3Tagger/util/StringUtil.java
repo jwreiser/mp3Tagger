@@ -11,28 +11,45 @@ public class StringUtil {
         for(String replace:replacements){
             album=album.replaceFirst(replace,"");
         }
-        return album;
+        return performCommonReplacements(album);
+    }
+    private static String replaceSpecialCharacters(String value){
+        return value.replaceAll("é","e").replaceAll("è","e").replaceAll("â","a").
+                replaceAll("î","i").replaceAll("ô","o").replaceAll("ñ","n")
+                .replaceAll("ü","u").replaceAll("ï","i").replaceAll("ç", "c");
     }
 
+    private static String performCommonReplacements(String value){
+        value= value.replaceAll("\\.","").replaceAll("-","");
+        return replaceSpecialCharacters(value);
+    }
     public static String cleanupArtist(String value) {
         String result= value.toLowerCase().replaceAll("the "," ").replaceAll("tha "," ");
         result=result.replaceAll("7\" version","").replaceAll("12\" version","");
         result=result.replaceAll("é","e").replaceFirst("&","and")
-                .replaceAll("[^a-zA-Z0-9\\[\\]()]", "");
-        return result;
+                .replaceAll("[^a-zA-Z0-9\\[\\]() ]", "");
+        return performCommonReplacements(result);
     }
     public static String cleanupTrack(String value) {
         List<String> replacements=List.of("old school","reunion","remix","extended","the ","original",
                 //to match the numbers we removed
                 "one","two","three","four","five","six","seven","eight","nine","ten","eleven","twelve","thirteen");
-        String result=removeTrailingText(value).toLowerCase().replaceAll("7\" version","").replaceAll("12\" version","");
+        String result=removeTrailingText(value).toLowerCase().replaceAll(" and ","").replaceAll(" the ","").replaceAll("7\" version","").replaceAll("12\" version","");
+        if(result.endsWith(" th")){
+            int start=result.lastIndexOf(" th");
+            result=result.substring(0,start);
+        }
+        if(result.endsWith(" the")){
+            int start=result.lastIndexOf(" the");
+            result=result.substring(0,start);
+        }
         for(String replace:replacements){
             result=result.replaceFirst(replace,"");
         }
         result= result.replaceAll("[^a-zA-Z\\[\\]()]", "");
-        result=result.replaceAll("é","e").replaceFirst("&","and").replaceFirst("mix","");
+        result=result.replaceAll("é","e").replaceAll("&","").replaceFirst("mix","");
 
-        return result;
+        return performCommonReplacements(result).trim();
     }
 
     public static String removeTrailingText(String trackName){
@@ -41,7 +58,8 @@ public class StringUtil {
             trackName=trackName.toLowerCase();
             if (trackName.contains("[")) {
                 trackName = trackName.substring(0, trackName.indexOf("[")).trim();
-            } else if (trackName.contains("(")) {
+            }
+            if (trackName.contains("(")) {
                 trackName = trackName.substring(0, trackName.indexOf("(")).trim();
             }
         }

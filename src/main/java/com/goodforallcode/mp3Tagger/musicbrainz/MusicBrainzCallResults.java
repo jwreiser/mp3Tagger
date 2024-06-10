@@ -2,15 +2,15 @@ package com.goodforallcode.mp3Tagger.musicbrainz;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.goodforallcode.mp3Tagger.model.domain.Mp3Info;
+import com.goodforallcode.mp3Tagger.util.ComparisonUtil;
+import com.goodforallcode.mp3Tagger.util.StringUtil;
 import com.mpatric.mp3agic.ID3v1Genres;
-import org.apache.commons.text.similarity.LevenshteinDistance;
 
 import java.util.List;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 
 public class MusicBrainzCallResults {
-    static LevenshteinDistance distanceCalculator = LevenshteinDistance.getDefaultInstance();
     int count;
     List<Recording> recordings;
 
@@ -196,36 +196,22 @@ public class MusicBrainzCallResults {
         long bestDifference = Integer.MAX_VALUE;
         long currentDuration, currentDifference;
 
-        boolean bestTitleIsASubset = false;
-        int bestDistance = Integer.MAX_VALUE, currentDistance;
+        long bestDistance = Integer.MAX_VALUE,currentDistance;
         String currentTrack;
-        suggestedTrack = suggestedTrack.replace(trackNumber + "", "").replace("&", "and").trim().toLowerCase();
+        suggestedTrack = StringUtil.cleanupTrack(suggestedTrack.toLowerCase().replace(trackNumber + "", ""));
 
         if (recordings.size() > 0) {
             for (Recording recording : recordings) {
                 if (!suggestedTrack.isEmpty()) {
-                    currentTrack = recording.getTitle().replace("&", "and").toLowerCase();
-                    if (suggestedTrack.contains(currentTrack)) {
-                        currentDistance = distanceCalculator.apply(suggestedTrack, currentTrack);
-                        if (bestTitleIsASubset) {
-                            if (currentDistance > bestDistance) {
-                                continue;
-                            }
-                        }
-                        bestTitleIsASubset = true;
+                    currentTrack = StringUtil.cleanupTrack(recording.getTitle().toLowerCase());
+                    currentDistance = ComparisonUtil.tracksAreEqual(suggestedTrack, currentTrack);
+                    if (currentDistance==0) {
+                        recordingToUse = recording;
+                        break;
+                    }
+                    else if (currentDistance>0 && (currentDistance < bestDistance) ){
                         bestDistance = currentDistance;
                         recordingToUse = recording;//at least use this if we can't find a release
-                    } else {
-                        if (bestTitleIsASubset) {
-                            continue;
-                        } else {
-                            currentDistance = distanceCalculator.apply(suggestedTrack, currentTrack);
-                            if (currentDistance > bestDistance) {
-                                continue;
-                            } else {
-                                bestDistance = currentDistance;
-                            }
-                        }
                     }
                 }
 

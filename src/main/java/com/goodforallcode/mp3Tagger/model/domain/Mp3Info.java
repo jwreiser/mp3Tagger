@@ -1,16 +1,40 @@
 package com.goodforallcode.mp3Tagger.model.domain;
 
+import lombok.Getter;
+import lombok.Setter;
+
+@Getter
+@Setter
 public class Mp3Info {
     String title;
     String artist;
     String album;
+    String fileLocation;
+    int count;
     int genre;
     String genreDescription;
+    String comment;
+
+    public boolean isUploaded() {
+        return comment!=null && comment.contains("spotifyTrackId");
+    }
+
+
+
+    public Mp3Info(String title, String artist) {
+        this.title = title;
+        this.artist = artist;
+    }
 
     public Mp3Info(String title, String artist, String album) {
         this.title = title;
         this.artist = artist;
         this.album = album;
+    }
+
+    public Mp3Info(String title, String artist, String album,String comment) {
+        this(title, artist, album);
+        this.comment = comment;
     }
 
     public Mp3Info(String title, String artist, String album, int genre, String genreDescription) {
@@ -46,6 +70,9 @@ public class Mp3Info {
 
     public String getGenreDescription() {
         return this.genreDescription;
+    }
+    public String getComment() {
+        return this.comment;
     }
 
     public boolean isComplete() {

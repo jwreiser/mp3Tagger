@@ -4,9 +4,8 @@ import com.wrapper.spotify.SpotifyApi;
 import com.wrapper.spotify.model_objects.credentials.AuthorizationCodeCredentials;
 import com.wrapper.spotify.requests.authorization.authorization_code.AuthorizationCodeRequest;
 import com.wrapper.spotify.requests.authorization.authorization_code.AuthorizationCodeUriRequest;
+import lombok.Getter;
 import lombok.Setter;
-import org.springframework.batch.core.launch.JobLauncher;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 
 import java.net.URI;
@@ -14,10 +13,13 @@ import java.net.URI;
 import static com.goodforallcode.mp3Tagger.spotify.SpotifyRestCaller.clientId;
 import static com.goodforallcode.mp3Tagger.spotify.SpotifyRestCaller.secret;
 
+@Getter
 @Setter
 public class TokenGenerator {
     private static SpotifyRestCaller spotifyCaller = new SpotifyRestCaller();
-
+    private static String token = null;
+    private static SpotifyApi spotifyApi;
+    private static String playlistId;
     @Value("${file.directory}")
     private String fileLocation;
 
@@ -30,13 +32,23 @@ public class TokenGenerator {
         this.disambiguate = disambiguate;
     }
 
+    public String getPlaylistId() {
+        return playlistId;
+    }
+
+    public  SpotifyApi getSpotifyApi() {
+        return spotifyApi;
+    }
 
 
 
     public String getToken() throws Exception {
+        if(token!=null){
+            return token;
+        }
         //AUth
         //Step 1 get code
-        SpotifyApi spotifyApi = new SpotifyApi.Builder()
+        spotifyApi = new SpotifyApi.Builder()
                 .setClientId(clientId)
                 .setClientSecret(secret)
                 .setRedirectUri(new URI("http://localhost:3000"))
@@ -57,7 +69,8 @@ public class TokenGenerator {
         spotifyApi.setAccessToken(authorizationCodeCredentials.getAccessToken());
         spotifyApi.setRefreshToken(authorizationCodeCredentials.getRefreshToken());
 
-        String token = spotifyCaller.getAccessToken();
+        token = spotifyCaller.getAccessToken();
+        playlistId = spotifyCaller.getPlaylistId(userName, "Latest", token);
         return token;
 
     }

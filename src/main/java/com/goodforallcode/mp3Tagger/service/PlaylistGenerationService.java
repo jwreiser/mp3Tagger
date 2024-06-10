@@ -17,32 +17,44 @@ public class PlaylistGenerationService {
     static MusicBrainzAlbumService musicBrainzAlbumService = new MusicBrainzAlbumService();
     static SpotifyAlbumService spotifyAlbumService = new SpotifyAlbumService();
 
-    public List<Album> addDirectoriesToPlayList(List<Path> pathList, String token, boolean disambiguate) {
-        List<Album> updatedAlbums = null;
-        List<Album> workingAlbums = new ArrayList<>();
+    public List<Mp3Info> getMp3InfoList(List<Path> pathList) {
+        List<Mp3Info> mp3InfoList = new ArrayList<>();
         for (
                 Path path : pathList) {
             final String directoryPath = path.toAbsolutePath().toString();
-            Set<Mp3Info> songs = new HashSet<>();
-            songService.getSongInformation(songs, directoryPath, true);
-            List<Album> albums = musicBrainzAlbumService.getAlbums(directoryPath, disambiguate);
-            for (Album album : albums) {
-                if (!Mp3FileUtil.isEveryFileTagged(album)) {
-                    System.out.println("still need to tag songs in: " + album.getName());
-                    workingAlbums.add(album);
-                } else {
-                    System.out.println("Already tagged every song in: " + album.getName());
-                }
-            }
+            mp3InfoList.addAll(songService.getCurrentSongInformation(directoryPath));
         }
+        return mp3InfoList;
+    }
+    public void addDirectoriesToPlayList(List<Path> pathList, String token) {
+        List<Album> workingAlbums = getAlbumsThatNeedTagging(pathList);
         if (!workingAlbums.isEmpty()) {
             try {
-                updatedAlbums = spotifyAlbumService.addAlbumsToPlaylist(token, workingAlbums);
+                spotifyAlbumService.tagAlbumTracks(token, workingAlbums);
             } catch (
                     URISyntaxException e) {
                 throw new RuntimeException(e);
             }
         }
-        return updatedAlbums;
+
+    }
+
+    private static List<Album> getAlbumsThatNeedTagging(List<Path> pathList) {
+        List<Album> workingAlbums = new ArrayList<>();
+
+        for (Path path : pathList) {
+            final String directoryPath = path.toAbsolutePath().toString();
+
+            List<Album> albums = musicBrainzAlbumService.getAlbums(directoryPath);
+            for (Album album : albums) {
+                if (!Mp3FileUtil.doesEveryFileHaveSpotifyInformation(album)) {
+                    System.err.println("still need to tag songs in: " + album.getArtist()+"~"+album.getName());
+                    workingAlbums.add(album);
+                } else {
+                    System.out.println("Already tagged every song in: " +album.getArtist()+"~"+ album.getName());
+                }
+            }
+        }
+        return workingAlbums;
     }
 }

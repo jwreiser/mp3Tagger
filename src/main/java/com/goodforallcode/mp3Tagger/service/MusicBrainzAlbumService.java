@@ -2,6 +2,7 @@ package com.goodforallcode.mp3Tagger.service;
 
 
 import com.goodforallcode.mp3Tagger.model.domain.Album;
+import com.goodforallcode.mp3Tagger.util.FileUtil;
 import com.goodforallcode.mp3Tagger.util.Mp3FileUtil;
 import com.mpatric.mp3agic.*;
 
@@ -19,15 +20,16 @@ import java.util.stream.Collectors;
 public class MusicBrainzAlbumService {
 
 
-    public List<Album> getAlbums(String currentDirectory, boolean disambiguate) {
+    public List<Album> getAlbums(String currentDirectory) {
         List<Album> albums = new ArrayList<>();
         try {
             List<Path> dirs = Files.walk(Paths.get(currentDirectory), 10)
                     .filter(Files::isDirectory)
+                    .filter(d->!Mp3FileUtil.doesEveryFileHaveSpotifyInformation(d))
                     .collect(Collectors.toList());
 
             for (Path directory : dirs) {
-                albums.addAll(getAlbumsFromDirectory(directory, disambiguate));
+                albums.addAll(getAlbumsFromDirectory(directory));
             }
         } catch (IOException e) {
             throw new RuntimeException(e);
@@ -36,7 +38,7 @@ public class MusicBrainzAlbumService {
     }
 
 
-    private List<Album> getAlbumsFromDirectory(Path directory, boolean disambiguate) throws IOException {
+    private List<Album> getAlbumsFromDirectory(Path directory) throws IOException {
         List<Album> albums = new ArrayList<>();
         String track, album, artist;
         Mp3File mp3;
@@ -49,7 +51,7 @@ public class MusicBrainzAlbumService {
         int numFiles = 0;
         if (directory != null && directory.toFile() != null && directory.toFile().listFiles() != null) {
             for (File file : directory.toFile().listFiles()) {
-                if (!file.isDirectory() && file.getName().endsWith(".mp3")) {
+                if (!file.isDirectory() && file.getName().endsWith(".mp3") && !Mp3FileUtil.fileHasSpotifyInformation(file)) {
                     try {
                         mp3 = new Mp3File(file);
                         id3v2Tag = mp3.getId3v2Tag();
@@ -67,6 +69,11 @@ public class MusicBrainzAlbumService {
                             System.err.println("There should be no untagged files by now, but " + file.getName() + " has no tag");
                             continue;
                         }
+
+                        if(FileUtil.isVariousArtists(file)){
+                            artist = "Various Artists";
+                        }
+
                         if(artist==null||artist.isEmpty()){
                             String[] pathParts = file.getParent().split("\\\\");
                             artist = pathParts[pathParts.length-2];
@@ -99,9 +106,9 @@ public class MusicBrainzAlbumService {
 
         List<String> tagArtists = trackInformation.keySet().stream().filter(a->!a.isEmpty()).toList();
         if (tagArtists.size() == 1) {
-            albums.addAll(getAlbumsWhenOneArtist(directory, trackInformation, numFiles, disambiguate));
+            albums.addAll(getAlbumsWhenOneArtist(directory, trackInformation, numFiles));
         } else if (tagArtists.size() > 1) {
-            albums.addAll(getAlbumsWhenMultipleArtists(directory, trackInformation, tagArtists, numFiles, disambiguate));
+            albums.addAll(getAlbumsWhenMultipleArtists(directory, trackInformation, tagArtists));
         }
         return albums;
     }
@@ -110,7 +117,7 @@ public class MusicBrainzAlbumService {
         return albumName.contains("#");
     }
 
-    private List<Album> getAlbumsWhenOneArtist(Path directory, HashMap<String, HashMap<String, List<File>>> trackInformation, int numFiles, boolean disambiguate) {
+    private List<Album> getAlbumsWhenOneArtist(Path directory, HashMap<String, HashMap<String, List<File>>> trackInformation, int numFiles) {
         List<Album> albums = new ArrayList<>();
         String artist = (String) trackInformation.keySet().toArray()[0];
 
@@ -118,7 +125,6 @@ public class MusicBrainzAlbumService {
         int numAlbums = albumsTracks.size();
 
 
-        String choice = null;
         List<String> artists;
         List<File> currentFiles;
         List<String> albumNames = new ArrayList<>(albumsTracks.keySet().stream().toList());
@@ -127,50 +133,25 @@ public class MusicBrainzAlbumService {
 
             for (Iterator<String> albumIterator = albumNames.iterator();albumIterator.hasNext();) {
                 currentAlbumName = albumIterator.next();
-                List<String> nonModifiedAlbumNamesList = new ArrayList<>(albumsTracks.keySet().stream().toList());
-                for (String testName : nonModifiedAlbumNamesList) {
-                    if (testName.toLowerCase().equals(currentAlbumName.toLowerCase()) && !testName.equals(currentAlbumName) && Character.isLowerCase(currentAlbumName.charAt(0))) {
-                        albumIterator.remove();
-                    }else if (testName.startsWith(currentAlbumName) && testName.length() > currentAlbumName.length()) {
-                        albumIterator.remove();
-                    } else if (badAlbumName(currentAlbumName)) {
-                        albumIterator.remove();
-                    }
+                 if (badAlbumName(currentAlbumName)) {
+                    albumIterator.remove();
                 }
             }
         }
-        if (numAlbums == 1) {
-            currentFiles = albumsTracks.get(albumNames.get(0));
-            albums.add(new Album(artist, albumNames.get(0), currentFiles));
-        } else {
-            if (disambiguate && albumNames.size() > 1) {
-                System.err.println("!!!!!!!!!!!!!!!!    Disambiguate albums for " + directory.toAbsolutePath() + albumNames);
-            }else{
-                choice=albumNames.get(0);
-            }
+        if (numAlbums == 0) {
+            System.err.println("!!!!!!!!!!!!!!!!    could not find albums for " + directory.toAbsolutePath());
 
-            if (choice != null) {
-                currentFiles = new ArrayList<>();
-                for (String albumName : albumNames) {
-                    currentFiles.addAll(albumsTracks.get(albumName));
-                }
-                for (File file : directory.toFile().listFiles()) {
-                    if (!file.isDirectory() && file.getName().endsWith(".mp3")) {
-                        Mp3FileUtil.updateFileTags(file.toPath(), choice, null, null, null, null);
-                    }
-                }
-            } else {
-                for (String albumName : albumsTracks.keySet()) {
-                    currentFiles = albumsTracks.get(albumName);
-                    albums.add(new Album(artist, albumName, currentFiles));
-                }
+        } else {
+            for(String albumName:albumNames){
+                currentFiles = albumsTracks.get(albumName);
+                albums.add(new Album(artist, albumName, currentFiles));
             }
         }
         return albums;
     }
 
     private List<Album> getAlbumsWhenMultipleArtists(Path directory, HashMap<String, HashMap<String, List<File>>> trackInformation
-            , List<String> tagArtists, int numFiles, boolean disambiguate) throws IOException {
+            , List<String> tagArtists) throws IOException {
         List<Album> albums = new ArrayList<>();
 
 
@@ -179,25 +160,14 @@ public class MusicBrainzAlbumService {
 
         String choice = null;
 
-        if (thisIsADirHoldingVariousArtists(directory) && disambiguate) {
-            System.err.println("Disambiguate artist for " + directory.toAbsolutePath() + tagArtists);
-        }
-        if (choice != null) {
-            for (File file : directory.toFile().listFiles()) {
-                if (!file.isDirectory() && file.getName().endsWith(".mp3")) {
-                    Mp3FileUtil.updateFileTags(file.toPath(), null, choice, null, null, null);
-                }
-            }
-            albums = getAlbumsFromDirectory(directory, disambiguate);
-        } else {
-            for (String artist : tagArtists) {
-                albumsFiles = trackInformation.get(artist);
-                for (String albumName : albumsFiles.keySet()) {
-                    currentFiles = albumsFiles.get(albumName);
-                    albums.add(new Album(artist, albumName, currentFiles));
-                }
+        for (String artist : tagArtists) {
+            albumsFiles = trackInformation.get(artist);
+            for (String albumName : albumsFiles.keySet()) {
+                currentFiles = albumsFiles.get(albumName);
+                albums.add(new Album(artist, albumName, currentFiles));
             }
         }
+
         return albums;
     }
 

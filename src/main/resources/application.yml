@@ -6,26 +6,12 @@ spring:
     name: mp3Tagger
   jackson:
     serialization.indent_output: true
-  datasource:
-    type: com.zaxxer.hikari.HikariDataSource
-    url: jdbc:h2:file:/data/mp3TagBatchLoader;AUTO_SERVER=TRUE
-    username: Mp3TagBatchLoader
-    password: Mp3TagBatchLoader
-    driverClassName: org.h2.Driver
-  h2:
-    console:
-      enabled: true
-  jpa:
-    database-platform: org.hibernate.dialect.H2Dialect
-    database: H2
-    show-sql: true
-    properties:
-      hibernate.id.new_generator_mappings: true
-      hibernate.cache.use_second_level_cache: false
-      hibernate.cache.use_query_cache: false
-      hibernate.generate_statistics: true
+  data:
+    mongodb:
+      database: OwnedMusic
+      uri: mongodb+srv://devUser:fakePass1@cluster0.q2ny9rm.mongodb.net/?retryWrites=true&w=majority
   batch:
       job:
         enabled: false
-  server:
-      port: 8089
+server:
+    port: 8089

@@ -7,9 +7,7 @@ import com.goodforallcode.mp3Tagger.rest.MusicBrainzRestCaller;
 import com.goodforallcode.mp3Tagger.util.FileNameUtil;
 import com.goodforallcode.mp3Tagger.util.Mp3FileUtil;
 import com.goodforallcode.mp3Tagger.util.StringUtil;
-import org.apache.commons.lang3.math.NumberUtils;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -23,28 +21,19 @@ public class SongInformationService {
     static MusicBrainzRestCaller caller = new MusicBrainzRestCaller();
 
 
-    public Set<Mp3Info> getSongInformation(Set<Mp3Info> songs, String currentDirectory, boolean manuallyConfigureMp3Tags) {
-        Set<Mp3Info> fileList = new HashSet<>();
+    public Set<Mp3Info> getCurrentSongInformation(String currentDirectory) {
+        Set<Mp3Info> songs = new HashSet<>();
         try {
-            final long numFiles = getNumberOfSongs(currentDirectory);
-
-            final double share = 1.0 / numFiles;
             Files.walkFileTree(Paths.get(currentDirectory), new SimpleFileVisitor<Path>() {
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                     if (!Files.isDirectory(file)) {
-//TODO                    task.exposedUpdateProgress(task.getProgress() + share,numFiles);
-//                        if(progressBar!=null) {
-//                            progressBar.setProgress(progressBar.getProgress() + share);
-//                        }
                         if (file.getFileName().toString().endsWith("mp3")) {
-                            Mp3Info info = fileToInfo(file, manuallyConfigureMp3Tags);
+                            Mp3Info info = fileToInfo(file);
                             if (info != null) {
                                 songs.add(info);
                             }
                         }
-                    }else {
-                        System.out.println("h");
                     }
                     return FileVisitResult.CONTINUE;
                 }
@@ -53,15 +42,11 @@ public class SongInformationService {
 
         }
 
-        return fileList;
+        return songs;
     }
 
-    public long getNumberOfSongs(String currentDirectory) throws IOException {
-        Path directory = Path.of(currentDirectory);
-        return Files.walk(directory).parallel().filter(p -> !p.toFile().isDirectory() && p.getFileName().toString().endsWith(".mp3")).count();
-    }
 
-    public Mp3Info fileToInfo(Path file, boolean manuallyConfigureMp3Tags) {
+    public Mp3Info fileToInfo(Path file) {
         Mp3Info result = Mp3FileUtil.getMp3Info(file);
         String album = StringUtil.cleanupAlbum(file.getParent().getFileName().toString());
         String trackName = FileNameUtil.getCleanFileName(file);
@@ -71,6 +56,7 @@ public class SongInformationService {
         String artist = null;
         Integer trackNumber = null;
         Integer numTracks = null;
+        //album cannot have been cleaned up yet; otherwise we lose the dash
         if (List.of("misc", "mixed", "various", "various artists").contains(album.toLowerCase()) && trackName.contains(" - ")) {
             String testTrack = trackName = FileNameUtil.getCleanFileName(file, true);
             String[] parts = trackName.split(" - ");
@@ -83,22 +69,22 @@ public class SongInformationService {
             artist = file.getParent().getParent().getFileName().toString();
         }
         if (result == null || !result.isComplete()) {
-            lookupMp3Tags(file, album, trackName, artist, manuallyConfigureMp3Tags);
+            lookupMp3Tags(file, album, trackName, artist);
         }
         return result;
     }
 
-    private Mp3Info lookupMp3Tags(Path file, String album, String trackName, String artist, boolean manuallyConfigureMp3Tags) {
+    private Mp3Info lookupMp3Tags(Path file, String album, String trackName, String artist) {
         Long duration = Mp3FileUtil.getMp3Duration(file);
 
 
-        Mp3Info result = getMp3Info(file, trackName, album, artist, manuallyConfigureMp3Tags);
+        Mp3Info result = getMp3Info(file, trackName, album, artist);
         if (result != null) {
             Integer genre = null;
             if (result.getGenreDescription() != null) {
                 genre = result.getGenre();
             }
-            updateFileTags(file, result.getAlbum(), result.getArtist(), result.getTitle(), genre, null);
+            updateFileTags(file, result.getAlbum(), result.getArtist(), result.getTitle(), genre, result.getGenreDescription());
         } else {
             //use existing file information since it seems like it is all we are going to get
             String existingTrackName = null;
@@ -107,8 +93,8 @@ public class SongInformationService {
             }
             if (existingTrackName != null && existingTrackName.length() > 5) {
                 updateFileTags(file, album, artist, trackName, null, null);
-            } else if (manuallyConfigureMp3Tags) {
-                System.err.println("could not map " +file.toAbsolutePath().toString()+"~"+artist+"~"+album);
+            } else {
+                System.err.println("could not map " + file.toAbsolutePath().toString() + "~" + artist + "~" + album);
             }
         }
 
@@ -140,7 +126,7 @@ public class SongInformationService {
         return result;
     }
 
-    private static Mp3Info getMp3Info(Path file, String trackName, String album, String artist, boolean manuallyConfigureMp3Tags) {
+    private static Mp3Info getMp3Info(Path file, String trackName, String album, String artist) {
         MusicBrainzCallResults results = null;
         Mp3Info result = null;
 
@@ -156,12 +142,12 @@ public class SongInformationService {
         if (result == null) {
             if (album != null) {
                 results = caller.getInfoFromAlbum(trackName, album, "jreiser.is@gmail.com");
-                if(results!=null) {
+                if (results != null) {
                     result = results.getMp3InfoFromResults();
                 }
                 if (result == null) {//since album is not null we did not try this yet
                     results = caller.getInfoFromArtistAndTrack(trackName, artist, "jreiser.is@gmail.com");
-                    if(results != null) {
+                    if (results != null) {
                         result = results.getMp3InfoFromResults();
                     }
                 }
@@ -170,10 +156,10 @@ public class SongInformationService {
         }
         if (result == null) {
             results = caller.getInfoFromTrack(trackName, "jreiser.is@gmail.com");
-            if (results!=null && results.getCount() == 1) {
+            if (results != null && results.getCount() == 1) {
                 result = results.getMp3InfoFromResults();
-            } else if (manuallyConfigureMp3Tags) {
-                System.err.println("could not map" +file.toAbsolutePath().toString()+"~"+artist+"~"+ album);
+            } else {
+                System.err.println("could not get tags for file " + file.toAbsolutePath().toString() + "~" + artist + "~" + album);
 
             }
         }
